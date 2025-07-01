@@ -53,6 +53,13 @@
             object-fit: contain;
         }
 
+        /* Force small images like GIFs to scale up */
+        img.scale-up {
+            width: 90vw;
+            height: 85vh;
+            object-fit: contain;
+        }
+
         .navigation {
             position: absolute;
             bottom: 40px;
@@ -139,7 +146,21 @@
             height: auto;
         }
 
-        /* Ensure black background in fullscreen */
+        /* Ensure scaled images fill screen in fullscreen too */
+        .slideshow-container:fullscreen img.scale-up,
+        .slideshow-container:-webkit-full-screen img.scale-up,
+        .slideshow-container:-moz-full-screen img.scale-up,
+        .slideshow-container:-ms-fullscreen img.scale-up {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+        }
+
+        /* Hide navigation for fullsize images */
+        .hide-nav {
+            opacity: 0;
+            pointer-events: none;
+        }
         .slideshow-container:fullscreen,
         .slideshow-container:-webkit-full-screen,
         .slideshow-container:-moz-full-screen,
@@ -174,7 +195,7 @@
             },
             {
                 image: "images/wanderers_Jupiter_2025_03_11_arrow.png",
-                caption: "Jupiter - March 11, 2025"
+                caption: "Jupiter - March 11, 2025 (first in series)"
             },
             {
                 image: "images/wanderers_Jupiter_2025_03_18.png",
@@ -194,7 +215,7 @@
             },
             {
                 image: "images/wanderers_Jupiter_2025_04_15.png",
-                caption: "Jupiter - April 15, 2025"
+                caption: "Jupiter - April 15, 2025 (last in series)"
             },
             
             // Mars images
@@ -204,7 +225,7 @@
             },
             {
                 image: "images/wanderers_Mars_2025_05_16.png",
-                caption: "Mars - May 16, 2025"
+                caption: "Mars - May 16, 2025 (first in series)"
             },
             {
                 image: "images/wanderers_Mars_2025_05_23.png",
@@ -216,7 +237,7 @@
             },
             {
                 image: "images/wanderers_Mars_2025_06_06.png",
-                caption: "Mars - June 6, 2025"
+                caption: "Mars - June 6, 2025 (last in series)"
             },
             
             // Saturn images
@@ -226,7 +247,7 @@
             },
             {
                 image: "images/wanderers_Saturn_2022_07_13.png",
-                caption: "Saturn - July 13, 2022"
+                caption: "Saturn - July 13, 2022 (first in series)"
             },
             {
                 image: "images/wanderers_Saturn_2022_07_20.png",
@@ -238,7 +259,7 @@
             },
             {
                 image: "images/wanderers_Saturn_2022_08_03.png",
-                caption: "Saturn - August 3, 2022"
+                caption: "Saturn - August 3, 2022 (last in series)"
             },
             
             // Venus-Saturn-Mercury images
@@ -252,7 +273,7 @@
             },
             {
                 image: "images/wanderers_Venus_Saturn_Mercury_2025_04_29.png",
-                caption: "Venus, Saturn & Mercury - April 29, 2025"
+                caption: "Venus, Saturn & Mercury - April 29, 2025 (first in series)"
             },
             {
                 image: "images/wanderers_Venus_Saturn_Mercury_2025_05_06.png",
@@ -272,7 +293,7 @@
             },
             {
                 image: "images/wanderers_Venus_Saturn_Mercury_2025_06_03.png",
-                caption: "Venus, Saturn & Mercury - June 3, 2025"
+                caption: "Venus, Saturn & Mercury - June 3, 2025 (last in series)"
             },
             {
                 image: "images/wanderers_z_00.png",
@@ -288,7 +309,8 @@
             },
             {
                 image: "images/Animation.gif",
-                caption: " "
+                caption: " ",
+                scaleUp: true
             }
         ];
 
@@ -336,6 +358,13 @@
             // Update image and caption
             slideImage.src = slides[index].image;
             slideCaption.textContent = slides[index].caption;
+            
+            // Apply scale-up class if needed (for GIF)
+            if (slides[index].scaleUp) {
+                slideImage.classList.add('scale-up');
+            } else {
+                slideImage.classList.remove('scale-up');
+            }
             
             // Update button states
             prevButton.disabled = index === 0;
