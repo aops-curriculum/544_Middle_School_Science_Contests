@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Mirror Optics</title>
+  <!-- Original AoPS interactive. Replaces the third-party "Geometric Optics" simulation. -->
+<script>
+// EigenNode auto-height v2.4
+(function() {
+  // 4px buffer for subpixel rounding + parent's >=3px noise threshold.
+  // Extra 18px when horizontal overflow forces a scrollbar (eats vertical
+  // space inside the iframe — AoPS classroom embeds in a narrower column
+  // than the 600px content, so a horizontal scrollbar appears and steals
+  // ~10-17px of height). Without this, the iframe ends up ~11-15px short.
+  var BUFFER = 4;
+  var H_SCROLLBAR = 18;
+  var measuring = false;
+  function measure() {
+    if (measuring) return 0;
+    var b = document.body, h = document.documentElement;
+    if (!b) return 0;
+    measuring = true;
+    // Temporarily neutralise body's height/min-height (overriding stylesheet
+    // rules with !important) so scrollHeight reflects actual content extent.
+    // Without this, patterns like body { height: 100vh } cause scrollHeight
+    // to echo the iframe's current viewport — adding BUFFER each cycle
+    // ratchets the iframe taller forever. Browser doesn't paint until this
+    // synchronous block returns, so no visible flicker.
+    var hOld = b.style.height, hPri = b.style.getPropertyPriority('height');
+    var mOld = b.style.minHeight, mPri = b.style.getPropertyPriority('min-height');
+    b.style.setProperty('height', 'auto', 'important');
+    b.style.setProperty('min-height', '0', 'important');
+    var content = b.scrollHeight || 0;
+    if (hOld) b.style.setProperty('height', hOld, hPri); else b.style.removeProperty('height');
+    if (mOld) b.style.setProperty('min-height', mOld, mPri); else b.style.removeProperty('min-height');
+    measuring = false;
+    // Check the documentElement only — that's the element that owns the
+    // iframe's horizontal scrollbar. Body can be narrower than the iframe
+    // (e.g. body{width:600px} centered in a 700px iframe) and have its own
+    // 1-2px overflow that doesn't actually trigger a scrollbar.
+    var hOverflow = h && (h.scrollWidth - h.clientWidth) >= 4;
+    return Math.ceil(content) + BUFFER + (hOverflow ? H_SCROLLBAR : 0);
+  }
+  var last = 0;
+  function report() {
+    var h = measure();
+    if (h > 0 && Math.abs(h - last) >= 2) {
+      last = h;
+      window.parent.postMessage({ type: 'resize', height: h }, '*');
+    }
+  }
+  window.addEventListener('load', report);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(report);
+  if (window.ResizeObserver && document.body) new ResizeObserver(report).observe(document.body);
+})();
+</script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 800px; height: 450px; overflow: hidden;
+      background: #f5f5f5;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      user-select: none;
+    }
+    canvas { display: block; touch-action: none; }
+    #bar {
+      height: 50px; display: flex; align-items: center;
+      gap: 16px; padding: 0 14px; font-size: 13px; color: #334;
+    }
+    .seg { display: inline-flex; border: 1px solid #9aa4b2; border-radius: 6px; overflow: hidden; }
+    .seg button {
+      border: none; background: #fff; padding: 5px 13px;
+      font: 13px 'Segoe UI', system-ui, sans-serif; color: #556; cursor: pointer;
+    }
+    .seg button.on { background: #2266ee; color: #fff; }
+    .ctl { display: inline-flex; align-items: center; gap: 7px; }
+    input[type=range] { width: 170px; accent-color: #2266ee; }
+    input[type=checkbox] { accent-color: #2266ee; }
+    #fOut { min-width: 52px; font-weight: 600; color: #223; }
+    #btnReset {
+      border: 1px solid #9aa4b2; background: #fff; border-radius: 6px;
+      padding: 5px 11px; font: 13px 'Segoe UI', system-ui, sans-serif;
+      color: #556; cursor: pointer; margin-left: auto;
+    }
+    #btnReset:hover, .seg button:hover:not(.on) { background: #eef2f8; }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="800" height="400"></canvas>
+  <div id="bar">
+    <span class="seg">
+      <button id="bConcave">Concave</button><button id="bConvex">Convex</button>
+    </span>
+    <label class="ctl">f
+      <input type="range" id="fRange" min="40" max="120" step="5">
+      <span id="fOut"></span>
+    </label>
+    <label class="ctl"><input type="checkbox" id="chkLabels"> Show labels</label>
+    <button id="btnReset" title="Reset">&#8635; Reset</button>
+  </div>
+  <script>
+  (() => {
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const W = 800, H = 400;
+    const PANEL = { x: 4, y: 4, w: 792, h: 392 };
+
+    // ── Physics / layout (distances in cm; SCALE px per cm) ─────────
+    const S = 1.5;                 // px per cm
+    const MX = 435;                // mirror vertex x (canvas px)
+    const AY = 230;                // principal axis y (canvas px)
+    const H_OBJ_CM = 30;           // object height (cm)
+    const H_OBJ_PX = H_OBJ_CM * S; // 45 px
+    const D_MIN = 20, D_MAX = 270; // object-distance range (cm)
+
+    // Ray colors (parallel / focal / center)
+    const C_RAY1 = '#e09000', C_RAY2 = '#1f7ad4', C_RAY3 = '#c2479e';
+    const C_OBJ = '#1f8a4c', C_IMG = '#7a4ba0';
+
+    // ── URL presets: ?mirror=convex&f=120&do=200&labels=0 ────────────
+    const params = new URLSearchParams(location.search);
+    const clampF = v => Math.max(40, Math.min(120, Math.round(v / 5) * 5));
+    const clampD = v => Math.max(D_MIN, Math.min(D_MAX, v));
+    const init = {
+      type: params.get('mirror') === 'convex' ? 'convex' : 'concave',
+      f: clampF(parseFloat(params.get('f')) || 60),
+      dObj: clampD(parseFloat(params.get('do')) || 160),
+      labels: params.get('labels') !== '0',
+    };
+
+    // ── State ────────────────────────────────────────────────────────
+    let type, f, dObj, showLabels, hintDone;
+    let dragging = false, dragDX = 0;
+    let lastMx = -100, lastMy = -100;
+
+    function applyInit() {
+      type = init.type; f = init.f; dObj = init.dObj;
+      showLabels = init.labels; hintDone = false;
+      syncControls();
+    }
+
+    // ── Controls ─────────────────────────────────────────────────────
+    const bConcave = document.getElementById('bConcave');
+    const bConvex  = document.getElementById('bConvex');
+    const fRange   = document.getElementById('fRange');
+    const fOut     = document.getElementById('fOut');
+    const chkLabels = document.getElementById('chkLabels');
+
+    function syncControls() {
+      bConcave.classList.toggle('on', type === 'concave');
+      bConvex.classList.toggle('on', type === 'convex');
+      fRange.value = f;
+      fOut.textContent = f + ' cm';
+      chkLabels.checked = showLabels;
+    }
+    bConcave.addEventListener('click', () => { type = 'concave'; syncControls(); });
+    bConvex.addEventListener('click',  () => { type = 'convex';  syncControls(); });
+    fRange.addEventListener('input', () => {
+      f = clampF(parseFloat(fRange.value)); fOut.textContent = f + ' cm';
+    });
+    chkLabels.addEventListener('change', () => { showLabels = chkLabels.checked; });
+    document.getElementById('btnReset').addEventListener('click', applyInit);
+
+    // ── Geometry (mirror equation 1/do + 1/di = 1/f, M = −di/do) ────
+    function geom() {
+      const fs = type === 'concave' ? f : -f;   // signed focal length
+      let u = dObj;
+      if (Math.abs(u - fs) < 1e-6) u += 1e-4;
+      const di = u * fs / (u - fs);
+      const M = -di / u;
+      return {
+        fs, u, di, M,
+        objX: MX - u * S, tipY: AY - H_OBJ_PX,
+        Fx: MX - fs * S, Cx: MX - 2 * fs * S,
+        imgX: MX - di * S, imgTipY: AY - M * H_OBJ_PX,
+        hImg: M * H_OBJ_CM,
+        finiteImg: isFinite(di) && Math.abs(di) < 99999 &&
+                   Math.abs(M * H_OBJ_PX) < 2500,
+      };
+    }
+
+    // ── Small helpers ────────────────────────────────────────────────
+    const norm = (dx, dy) => { const m = Math.hypot(dx, dy); return { x: dx / m, y: dy / m }; };
+    function dirThrough(a, b) {           // unit vector a→b, flipped so dx ≤ 0
+      let d = norm(b.x - a.x, b.y - a.y);
+      if (d.x > 0) { d.x = -d.x; d.y = -d.y; }
+      return d;
+    }
+    const past = (a, b, k) => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k });
+
+    function line(x1, y1, x2, y2) {
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    }
+    function rrect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+    function arrowHead(x, y, angle, size, color) {
+      ctx.save();
+      ctx.translate(x, y); ctx.rotate(angle);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(-size, -size * 0.45);
+      ctx.lineTo(-size, size * 0.45);
+      ctx.closePath();
+      ctx.fillStyle = color; ctx.fill();
+      ctx.restore();
+    }
+    const fmt = v => {
+      if (!isFinite(v) || Math.abs(v) > 99999) return '—';
+      const s = Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1);
+      return s.replace('-', '−');
+    };
+    const fmtM = v => (!isFinite(v) || Math.abs(v) > 999) ? '—'
+      : v.toFixed(2).replace('-', '−');
+    const fmtInt = v => (v < 0 ? '−' : '') + Math.abs(v);
+
+    // Variable with subscript, e.g. d_o ; returns x just past the text
+    function grp(x, y, main, sub, rest) {
+      ctx.textAlign = 'left'; ctx.fillStyle = '#223';
+      ctx.font = 'italic bold 14px Georgia, serif';
+      ctx.fillText(main, x, y);
+      x += ctx.measureText(main).width;
+      if (sub) {
+        ctx.font = 'italic 10px Georgia, serif';
+        ctx.fillText(sub, x + 1, y + 3);
+        x += ctx.measureText(sub).width + 2;
+      }
+      ctx.font = '13px Segoe UI, system-ui, sans-serif';
+      ctx.fillText(rest, x, y);
+      return x + ctx.measureText(rest).width;
+    }
+
+    // ── Scene pieces ─────────────────────────────────────────────────
+    function drawMirror(g) {
+      const R = Math.abs(2 * g.fs) * S;
+      const halfH = Math.min(150, R * 0.92);
+      const halfAng = Math.asin(halfH / R);
+      const concave = type === 'concave';
+      const cx = concave ? MX - R : MX + R;   // arc center (= C for concave)
+
+      // Hatching on the back of the mirror
+      ctx.strokeStyle = '#9aa3ad'; ctx.lineWidth = 1;
+      const N = 18;
+      for (let i = 0; i <= N; i++) {
+        const a = (concave ? 0 : Math.PI) + (-halfAng + 2 * halfAng * i / N);
+        const px = cx + R * Math.cos(a), py = AY + R * Math.sin(a);
+        const hd = concave ? norm(px - cx, py - AY) : norm(cx - px, AY - py);
+        line(px, py, px + hd.x * 8, py + hd.y * 8);
+      }
+
+      // Reflecting surface (silver gradient)
+      const grd = ctx.createLinearGradient(MX - 7, 0, MX + 7, 0);
+      grd.addColorStop(0, '#9aa0a8');
+      grd.addColorStop(0.4, '#f5f7fa');
+      grd.addColorStop(0.7, '#d4d8dd');
+      grd.addColorStop(1, '#7d838c');
+      ctx.strokeStyle = grd; ctx.lineWidth = 5;
+      ctx.beginPath();
+      if (concave) ctx.arc(cx, AY, R, -halfAng, halfAng);
+      else         ctx.arc(cx, AY, R, Math.PI - halfAng, Math.PI + halfAng);
+      ctx.stroke();
+    }
+
+    function drawObjectArrow(g, hover) {
+      ctx.save();
+      if (hover) { ctx.shadowColor = C_OBJ; ctx.shadowBlur = 14; }
+      ctx.strokeStyle = C_OBJ; ctx.lineWidth = 5; ctx.lineCap = 'round';
+      line(g.objX, AY, g.objX, g.tipY + 12);
+      ctx.beginPath();
+      ctx.moveTo(g.objX, g.tipY);
+      ctx.lineTo(g.objX - 8, g.tipY + 15);
+      ctx.lineTo(g.objX + 8, g.tipY + 15);
+      ctx.closePath();
+      ctx.fillStyle = C_OBJ; ctx.fill();
+      ctx.beginPath(); ctx.arc(g.objX, AY, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = C_OBJ; ctx.font = 'italic 10.5px Segoe UI';
+      ctx.textAlign = 'center';
+      ctx.fillText('object', g.objX, AY + 15);
+    }
+
+    function drawImageArrow(g) {
+      const up = g.M > 0;                       // upright image
+      const tipY = g.imgTipY;
+      const hLen = Math.min(15, Math.max(5, Math.abs(AY - tipY) * 0.55));
+      const hw = Math.min(8, hLen * 0.55);
+      const headIn = up ? hLen : -hLen;         // head base offset toward axis
+      const virtual = g.di < 0;
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = C_IMG; ctx.lineWidth = 5; ctx.lineCap = 'round';
+      if (virtual) ctx.setLineDash([7, 5]);
+      line(g.imgX, AY, g.imgX, tipY + headIn * 0.8);
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(g.imgX, tipY);
+      ctx.lineTo(g.imgX - hw, tipY + headIn);
+      ctx.lineTo(g.imgX + hw, tipY + headIn);
+      ctx.closePath();
+      ctx.fillStyle = C_IMG; ctx.fill();
+      ctx.beginPath(); ctx.arc(g.imgX, AY, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = C_IMG; ctx.font = 'italic 10.5px Segoe UI';
+      ctx.textAlign = 'center';
+      ctx.fillText('image', g.imgX, up ? AY + 15 : AY - 7);
+    }
+
+    // One principal ray: incident (object tip → hit), reflected (solid),
+    // plus dashed virtual extensions behind the mirror.
+    function drawRay(color, tip, hit, refDir, dashEnds, retrace) {
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash([]);
+      // Incident
+      line(tip.x, tip.y, hit.x, hit.y);
+      const ia = Math.atan2(hit.y - tip.y, hit.x - tip.x);
+      arrowHead(tip.x + (hit.x - tip.x) * 0.45,
+                tip.y + (hit.y - tip.y) * 0.45, ia, 9, color);
+      // Reflected (solid, away from mirror)
+      line(hit.x, hit.y, hit.x + refDir.x * 1600, hit.y + refDir.y * 1600);
+      const ra = Math.atan2(refDir.y, refDir.x);
+      arrowHead(hit.x + refDir.x * 95, hit.y + refDir.y * 95, ra, 9, color);
+      if (retrace)  // center ray retraces itself: opposite arrowhead too
+        arrowHead(hit.x + refDir.x * 55, hit.y + refDir.y * 55, ra + Math.PI, 9, color);
+      // Dashed extensions (virtual construction lines)
+      for (const d of dashEnds) {
+        ctx.save();
+        ctx.globalAlpha = d.faint ? 0.45 : 0.8;
+        ctx.setLineDash([6, 5]); ctx.lineWidth = 1.6;
+        line(hit.x, hit.y, d.to.x, d.to.y);
+        ctx.restore();
+      }
+      ctx.setLineDash([]);
+    }
+
+    function drawRays(g) {
+      const objTip = { x: g.objX, y: g.tipY };
+      const Fpt = { x: g.Fx, y: AY }, Cpt = { x: g.Cx, y: AY };
+      const imgTip = { x: g.imgX, y: g.imgTipY };
+      const virtual = g.di < 0 && g.finiteImg;
+      const convex = type === 'convex';
+
+      // Ray 1 — parallel in, reflects through (or away from) F
+      const hit1 = { x: MX, y: g.tipY };
+      drawRay(C_RAY1, objTip, hit1, dirThrough(hit1, Fpt),
+        virtual ? [{ to: convex ? past(hit1, Fpt, 1.15) : imgTip }] : []);
+
+      // Ray 2 — through/toward F in, reflects parallel
+      const hit2 = { x: MX, y: g.imgTipY };
+      if (Math.abs(hit2.y - AY) < 2800) {
+        const dash2 = [];
+        if (virtual) {
+          dash2.push({ to: imgTip });
+          if (convex) dash2.push({ to: past(hit2, Fpt, 1.05), faint: true });
+        }
+        drawRay(C_RAY2, objTip, hit2, { x: -1, y: 0 }, dash2);
+      }
+
+      // Ray 3 — through/toward C, reflects straight back
+      if (Math.abs(g.u - 2 * g.fs) > 1.5) {
+        const y3cm = -2 * g.fs * H_OBJ_CM / (g.u - 2 * g.fs);
+        const hit3 = { x: MX, y: AY - y3cm * S };
+        if (Math.abs(hit3.y - AY) < 3000) {
+          drawRay(C_RAY3, objTip, hit3, dirThrough(hit3, objTip),
+            virtual ? [{ to: convex ? past(hit3, Cpt, 1.1) : imgTip }] : [],
+            true);
+        }
+      }
+    }
+
+    function drawMarkers(g) {
+      for (const m of [{ x: g.Fx, t: 'F' }, { x: g.Cx, t: 'C' }]) {
+        ctx.beginPath(); ctx.arc(m.x, AY, 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#36404e'; ctx.fill();
+        if (showLabels) {
+          ctx.font = 'bold 13px Segoe UI'; ctx.textAlign = 'center';
+          ctx.fillText(m.t, m.x, AY + 19);
+        }
+      }
+    }
+
+    function dimBar(x1, x2, y, label) {
+      ctx.save();
+      ctx.strokeStyle = '#886600'; ctx.fillStyle = '#886600';
+      ctx.lineWidth = 1.2; ctx.setLineDash([5, 4]);
+      line(x1, y, x2, y);
+      ctx.setLineDash([]);
+      line(x1, y - 5, x1, y + 5);
+      line(x2, y - 5, x2, y + 5);
+      ctx.font = 'italic 11.5px Georgia, serif'; ctx.textAlign = 'center';
+      ctx.fillText(label, (x1 + x2) / 2, y - 5);
+      ctx.restore();
+    }
+
+    function drawReadouts(g) {
+      // Strip
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      rrect(10, 8, 548, 50, 8);
+      ctx.fillStyle = '#fff'; ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.restore();
+
+      let x = 26;
+      x = grp(x, 30, 'd', 'o', ' = ' + fmt(g.u) + ' cm') + 16;
+      x = grp(x, 30, 'd', 'i', ' = ' + fmt(g.di) + ' cm') + 16;
+      x = grp(x, 30, 'M', '', ' = ' + fmtM(g.M)) + 16;
+      grp(x, 30, 'h', 'i', ' = ' + fmt(isFinite(g.di) && Math.abs(g.di) < 99999 ? g.hImg : NaN) + ' cm');
+
+      ctx.font = '12px Segoe UI'; ctx.fillStyle = '#667'; ctx.textAlign = 'left';
+      ctx.fillText('f = ' + fmtInt(g.fs) + ' cm        R = 2f = ' + fmtInt(2 * g.fs) +
+                   ' cm        object height = ' + H_OBJ_CM + ' cm', 26, 50);
+
+      // Image-type chip
+      const none = !(isFinite(g.di) && Math.abs(g.di) < 99999);
+      const real = !none && g.di > 0;
+      const absM = Math.abs(g.M);
+      const sizeWord = absM > 1.02 ? 'enlarged' : absM < 0.98 ? 'reduced' : 'same size';
+      const chip = none
+        ? { bg: '#f2f2f2', bd: '#ccc',    t1: '#666',    t2: '#888',
+            l1: 'No image', l2: 'reflected rays are parallel' }
+        : real
+        ? { bg: '#fbeaea', bd: '#e3b6b6', t1: '#b3372f', t2: '#7a4a45',
+            l1: 'Real image', l2: 'inverted · ' + sizeWord }
+        : { bg: '#e9f0fb', bd: '#b9cdec', t1: '#2b5fb8', t2: '#4a5e7a',
+            l1: 'Virtual image', l2: 'upright · ' + sizeWord };
+      rrect(566, 8, 224, 50, 8);
+      ctx.fillStyle = chip.bg; ctx.fill();
+      ctx.strokeStyle = chip.bd; ctx.lineWidth = 1; ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = chip.t1; ctx.font = 'bold 14px Segoe UI';
+      ctx.fillText(chip.l1, 678, 29);
+      ctx.fillStyle = chip.t2; ctx.font = '11.5px Segoe UI';
+      ctx.fillText(chip.l2, 678, 47);
+    }
+
+    function drawLegend() {
+      const items = [['parallel ray', C_RAY1], ['focal ray', C_RAY2], ['center ray', C_RAY3]];
+      let x = 18; const y = 384;
+      for (const [t, c] of items) {
+        ctx.strokeStyle = c; ctx.lineWidth = 2.5;
+        line(x, y - 4, x + 18, y - 4);
+        ctx.fillStyle = '#556'; ctx.font = '10.5px Segoe UI'; ctx.textAlign = 'left';
+        ctx.fillText(t, x + 23, y);
+        x += 23 + ctx.measureText(t).width + 22;
+      }
+    }
+
+    // ── Main draw ────────────────────────────────────────────────────
+    function draw() {
+      const g = geom();
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = '#f5f5f5'; ctx.fillRect(0, 0, W, H);
+
+      // Bench panel
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.rect(PANEL.x, PANEL.y, PANEL.w, PANEL.h);
+      ctx.fill(); ctx.stroke();
+
+      // Region behind the mirror
+      ctx.fillStyle = 'rgba(100,110,130,0.05)';
+      ctx.fillRect(MX, PANEL.y + 1, PANEL.x + PANEL.w - MX - 1, PANEL.h - 2);
+      if (showLabels) {
+        ctx.fillStyle = '#99a3ae'; ctx.font = 'italic 10px Segoe UI';
+        ctx.textAlign = 'center';
+        ctx.fillText('behind mirror', (MX + PANEL.x + PANEL.w) / 2, 76);
+      }
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(PANEL.x + 1, PANEL.y + 1, PANEL.w - 2, PANEL.h - 2);
+      ctx.clip();
+
+      // Principal axis
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1;
+      ctx.setLineDash([8, 6]);
+      line(PANEL.x + 2, AY, PANEL.x + PANEL.w - 2, AY);
+      ctx.setLineDash([]);
+      if (showLabels) {
+        ctx.fillStyle = '#99a3ae'; ctx.font = '10px Segoe UI'; ctx.textAlign = 'left';
+        ctx.fillText('principal axis', PANEL.x + 12, AY - 7);
+      }
+
+      // Mirror plane (rays bend here, paraxial convention)
+      ctx.strokeStyle = 'rgba(0,0,0,0.10)'; ctx.lineWidth = 1;
+      ctx.setLineDash([3, 5]);
+      line(MX, 70, MX, PANEL.y + PANEL.h - 6);
+      ctx.setLineDash([]);
+
+      // f and R = 2f dimension bars
+      if (showLabels) {
+        dimBar(MX, g.Fx, AY + 32, 'f = ' + f + ' cm');
+        dimBar(MX, g.Cx, AY + 52, 'R = 2f = ' + 2 * f + ' cm');
+      }
+
+      drawRays(g);
+      drawMarkers(g);
+      drawMirror(g);
+
+      // Object (with hover glow) and image
+      const hover = dragging ||
+        (Math.abs(lastMx - g.objX) < 25 && lastMy > g.tipY - 25 && lastMy < AY + 18);
+      drawObjectArrow(g, hover);
+
+      const imgOn = g.finiteImg &&
+        g.imgX > PANEL.x + 6 && g.imgX < PANEL.x + PANEL.w - 6 &&
+        Math.abs(g.imgTipY - AY) < 1800;
+      if (imgOn) drawImageArrow(g);
+      else if (g.finiteImg) {
+        ctx.fillStyle = '#778899'; ctx.font = 'italic 11px Segoe UI';
+        if (g.imgX <= PANEL.x + 6) {
+          ctx.textAlign = 'left';
+          ctx.fillText('← image off-screen', PANEL.x + 14, AY - 14);
+        } else {
+          ctx.textAlign = 'right';
+          ctx.fillText('image off-screen →', PANEL.x + PANEL.w - 14, AY - 14);
+        }
+      }
+
+      ctx.restore(); // end panel clip
+
+      drawReadouts(g);
+      if (showLabels) drawLegend();
+
+      if (!hintDone) {
+        ctx.fillStyle = '#aabbcc'; ctx.font = '11px Segoe UI'; ctx.textAlign = 'center';
+        ctx.fillText('Drag the object ↔', g.objX, g.tipY - 16);
+      }
+    }
+
+    // ── Animation loop ───────────────────────────────────────────────
+    let lastTs = null;
+    function frame(ts) {
+      if (!lastTs) lastTs = ts;
+      const dt = Math.min((ts - lastTs) / 1000, 0.05);
+      lastTs = ts; void dt;   // scene is static; loop drives hover/drag updates
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    // ── Interaction (pointer events: mouse + touch) ──────────────────
+    const cpos = e => {
+      const r = canvas.getBoundingClientRect();
+      return [e.clientX - r.left, e.clientY - r.top];
+    };
+    canvas.addEventListener('pointerdown', e => {
+      const [mx, my] = cpos(e);
+      const g = geom();
+      if (Math.abs(mx - g.objX) < 25 && my > g.tipY - 25 && my < AY + 18) {
+        dragging = true; dragDX = mx - g.objX;
+        canvas.setPointerCapture(e.pointerId);
+      }
+    });
+    canvas.addEventListener('pointermove', e => {
+      const [mx, my] = cpos(e);
+      lastMx = mx; lastMy = my;
+      if (dragging) {
+        dObj = clampD((MX - (mx - dragDX)) / S);
+        hintDone = true;
+        canvas.style.cursor = 'grabbing';
+      } else {
+        const g = geom();
+        const over = Math.abs(mx - g.objX) < 25 && my > g.tipY - 25 && my < AY + 18;
+        canvas.style.cursor = over ? 'grab' : 'default';
+      }
+    });
+    const endDrag = () => { dragging = false; };
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+    canvas.addEventListener('pointerleave', () => { lastMx = -100; lastMy = -100; });
+
+    applyInit();
+    requestAnimationFrame(frame);
+  })();
+  </script>
+</body>
+</html>
